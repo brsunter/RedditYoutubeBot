@@ -10,16 +10,16 @@ import           YouTube
 
 createPlaylistFromReddit :: IO ()
 createPlaylistFromReddit = do
-  today <- formattedTodayDate
+  today       <- formattedTodayDate
   credentials <- readCredentialsFromEnv
-  at <- getYoutubeAccessToken credentials
-  case at of
-    Nothing -> error "Cannot obtain access token"
+  accessToken <- getYoutubeAccessToken credentials
+  case accessToken of
+    Nothing    -> error "Cannot obtain access token"
     Just token -> do
-      pl <- makeYoutubePlaylist token $ T.concat [videoMessage , today]
+      pl <- makeYoutubePlaylist token (T.concat [videoMessage, today])
       case pl of
-        Nothing -> error "Cannot Make Playlist"
+        Nothing       -> error "Cannot Make Playlist"
         Just playlist -> do
           print pl
-          S.withSession $ \sess -> runEffect $ postStream sess "" >-> filterYoutube >-> P.take 40 >-> postToYoutube sess token playlist
+          S.withSession $ \sess -> runEffect (postStream sess "" >-> filterYoutube >-> P.take 40 >-> postToYoutube sess token playlist)
 
