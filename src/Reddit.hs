@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Reddit
-  (Post(..),
-  videoIdFromPost,
-  filterYoutube,
-  postStream
+  ( Post(..)
+  , videoIdFromPost
+  , filterYoutube
+  , postStream
   ) where
 
 import           Control.Applicative       (pure, (<$>), (<*>))
@@ -22,12 +22,12 @@ import qualified Network.Wreq.Session      as S
 import           Pipes
 import qualified Pipes.Prelude             as P
 
-data Post = Post {
-          title  :: !Text,
-          domain :: !Text,
-          score  :: Int,
-          url    :: !Text
-} deriving (Show)
+data Post = Post
+  { title  :: !Text
+  , domain :: !Text
+  , score  :: Int
+  , url    :: !Text
+  } deriving (Show)
 
 instance FromJSON Post where
   parseJSON (Object v) = do
@@ -36,85 +36,91 @@ instance FromJSON Post where
     domain <- objectData .: "domain"
     score  <- objectData .: "score"
     url    <- objectData .: "url"
-    return $ Post title domain score url
+    return (Post title domain score url)
 
-data GetPostsResult = GetPostsResult {
-  posts :: [Post],
-  after :: Maybe Text
-} deriving (Show)
+data GetPostsResult = GetPostsResult
+  { posts :: [Post]
+  , after :: Maybe Text
+  } deriving (Show)
 
 instance FromJSON GetPostsResult where
   parseJSON (Object v) = do
     rootData   <- v        .:  "data"
     posts      <- rootData .:  "children"
     afterCode  <- rootData .:? "after"
-    return $ GetPostsResult posts afterCode
+    return (GetPostsResult posts afterCode)
 
 redditVideoUrl = "https://www.reddit.com/r/all/top/.json?sort=top&t=day&after="
 
-retryWithDelay  ::  IO a -> IO a
-retryWithDelay x = threadDelay 10000000 >>= \_ -> x
+retryWithDelay :: IO a -> IO a
+retryWithDelay x = threadDelay 10000000 >> x
 
 fetchPageWithRetries :: S.Session -> Text -> Int -> IO (Maybe GetPostsResult)
-fetchPageWithRetries sess afterCode retries  = do
+fetchPageWithRetries sess afterCode retries = do
   result <- try (fetchPage sess afterCode) :: IO (Either HttpException (Maybe GetPostsResult))
   case result of
-    Left (StatusCodeException (Status 503 _ ) _ _) -> if retries > 0
-    then retryWithDelay $  fetchPageWithRetries sess afterCode (retries - 1) else return Nothing
-    Left _ -> return Nothing
-    (Right r) -> return r
+    Left (StatusCodeException (Status 503 _ ) _ _) ->
+      if retries > 0
+        then retryWithDelay (fetchPageWithRetries sess afterCode (retries - 1))
+        else return Nothing
+    Left _  -> return Nothing
+    Right r -> return r
 
 fetchPage :: S.Session -> Text -> IO (Maybe GetPostsResult)
-fetchPage sess afterCode =
-  S.get sess  (redditVideoUrl ++ unpack afterCode) >>= \response -> return $ decode $ response ^. responseBody
+fetchPage sess afterCode = do
+  response <- S.get sess (redditVideoUrl ++ unpack afterCode)
+  return $ decode (response ^. responseBody)
 
 postStream :: S.Session -> Text -> Producer Post IO ()
 postStream sess afterCode = do
-  posts <- liftIO $ fetchPageWithRetries sess afterCode 4
+  posts <- liftIO (fetchPageWithRetries sess afterCode 4)
   for_ posts $ \(GetPostsResult ps afterParam) -> do
     each ps
-    for_ afterParam $ postStream sess
+    for_ afterParam (postStream sess)
 
-isCorrectDomain :: Text -> Bool
-isCorrectDomain x = elem x validDomains
 
 postIsValidDomain :: Post -> Bool
-postIsValidDomain x = isCorrectDomain $ domain x
+postIsValidDomain x = isValidDomain (domain x)
+  where
+    isValidDomain :: Text -> Bool
+    isValidDomain x = x `elem` validDomains
+
+    validDomains = prependHost [youtubeLongURL, youtubeShortURL]
 
 youtubeShortURL = "youtu.be"
 youtubeLongURL = "youtube.com"
 
-validDomains = prependHost [youtubeLongURL , youtubeShortURL]
 
 prependHost :: [Text] -> [Text]
-prependHost hs = ([append "www.", append "", append "m."] <*> hs)
+prependHost hs = append <$> ["www.", "", "m."] <*> hs
 
-filterYoutube ::  Pipe Post Post IO ()
-filterYoutube  =  (P.filter postIsValidDomain)
+filterYoutube :: Pipe Post Post IO ()
+filterYoutube = P.filter postIsValidDomain
 
 isLongUrl :: URL -> Bool
-isLongUrl u =  case (url_type u) of
-  Absolute h -> elem ((pack . host) h) $ prependHost [youtubeLongURL]
+isLongUrl u = case url_type u of
+  Absolute h -> pack (host h) `elem` prependHost [youtubeLongURL]
   _ -> False
 
 videoIdFromPost :: Post -> Maybe String
-videoIdFromPost p = videoIdFromURL $ unpack $ url p
+videoIdFromPost p = videoIdFromURL (unpack (url p))
+  where
+    videoIdFromURL :: String -> Maybe String
+    videoIdFromURL u = case importURL u of
+      Just x  -> if isLongUrl x
+                   then videoIdFromLongURL  x
+                   else videoIdFromShortURL x
+      Nothing -> Nothing
 
-videoIdFromURL :: String -> Maybe String
-videoIdFromURL u = case (importURL u) of
-  Just x -> if isLongUrl x then videoIdFromLongURL x else videoIdFromShortURL x
-  Nothing -> Nothing
+    videoIdFromLongURL :: URL -> Maybe String
+    videoIdFromLongURL x =
+      case lookup "v" (url_params x) of
+        Nothing -> Nothing
+        Just "" -> Nothing
+        Just p  -> Just p
 
-videoIdFromLongURL :: URL -> Maybe String
-videoIdFromLongURL x = let params = url_params x
-                           videoParam =   lookup "v"  params
-                          in case videoParam of
-                           Nothing -> Nothing
-                           Just "" -> Nothing
-                           Just p -> Just p
-
-videoIdFromShortURL :: URL -> Maybe String
-videoIdFromShortURL url = let path = url_path url in
-                              case path of
-                                "" -> Nothing
-                                s -> Just s
+    videoIdFromShortURL :: URL -> Maybe String
+    videoIdFromShortURL url =
+      case url_path url of
+        "" -> Nothing
+        s  -> Just s

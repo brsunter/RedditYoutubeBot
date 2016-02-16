@@ -1,10 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 module YouTube
-  (postToYoutube,
-  makeYoutubePlaylist,
-  getYoutubeAccessToken,
-  readCredentialsFromEnv
-  )where
+  ( postToYoutube
+  , makeYoutubePlaylist
+  , getYoutubeAccessToken
+  , readCredentialsFromEnv
+  ) where
 
 import           Control.Applicative       (pure, (<$>), (<*>))
 import           Control.Exception         (try)
@@ -27,97 +27,104 @@ import           Prelude                   hiding (concat)
 import           Reddit
 import           System.Environment        (lookupEnv)
 
-clientRefreshTokenEnv = "YOUTUBE_REFRESH_TOKEN" :: String
-clientIdEnv = "YOUTUBE_CLIENT_ID" :: String
-clientSecretEnv = "YOUTUBE_CLIENT_SECRET" :: String
-
-
-readEnvVariable :: String -> IO (Maybe Text)
-readEnvVariable envVar = lookupEnv envVar >>= return . (pack <$>)
-
 youtubeTokenURL :: AccessTokenCredentials -> Text
-youtubeTokenURL creds = concat ["https://www.googleapis.com/oauth2/v3/token?client_secret=" , clientSecret creds ,
-                                "&grant_type=refresh_token&refresh_token=", clientRefreshToken creds,
-                                "&client_id=", clientId creds]
+youtubeTokenURL creds =
+  concat [ "https://www.googleapis.com/oauth2/v3/token?client_secret="
+         , clientSecret creds
+         , "&grant_type=refresh_token&refresh_token="
+         , clientRefreshToken creds
+         , "&client_id="
+         , clientId creds
+         ]
 
-data AccessTokenCredentials = AccessTokenCredentials {
-    clientId           :: Text,
-    clientSecret       :: Text,
-    clientRefreshToken :: Text
-    }
+data AccessTokenCredentials = AccessTokenCredentials
+  { clientId           :: Text
+  , clientSecret       :: Text
+  , clientRefreshToken :: Text
+  }
 
-googleBaseURL = "https://www.googleapis.com/youtube/v3" :: String
-googlePlaylistAPI =  googleBaseURL ++ "/playlists?part=snippet,status"
-googleItemAPI = googleBaseURL ++ "/playlistItems?part=snippet"
+googleBaseURL     = "https://www.googleapis.com/youtube/v3" :: String
+googlePlaylistAPI = googleBaseURL ++ "/playlists?part=snippet,status"
+googleItemAPI     = googleBaseURL ++ "/playlistItems?part=snippet"
 refreshTokenFilename = "refreshtoken"
-
-
-emptyPostParam :: FormParam
-emptyPostParam = x := x
-  where
-    x  = "" :: BS.ByteString
 
 getYoutubeAccessToken :: AccessTokenCredentials -> IO (Maybe Text)
 getYoutubeAccessToken creds = do
   r <- post (unpack $ youtubeTokenURL creds) emptyPostParam
-  return $ r ^? responseBody . key "access_token" . _String
+  return (r ^? responseBody . key "access_token" . _String)
+
+  where
+    emptyPostParam :: FormParam
+    emptyPostParam = x := x
+      where
+        x  = "" :: BS.ByteString
 
 googleAuthOptions :: Text -> Options
-googleAuthOptions token = defaults &
-  header "Authorization" .~ [BS.concat ["Bearer ", BSC.pack $ unpack token]] &
-  header "Content-Type" .~ ["application/json"]
+googleAuthOptions token = defaults
+  & header "Authorization" .~ [BS.concat ["Bearer ", BSC.pack $ unpack token]]
+  & header "Content-Type"  .~ ["application/json"]
 
-makeYoutubePlaylist ::  Text -> Text-> IO (Maybe Text)
-makeYoutubePlaylist token name = postWith (googleAuthOptions token) googlePlaylistAPI (PlaylistBody name) >>=  return . extractIdResponse
+makeYoutubePlaylist ::  Text -> Text -> IO (Maybe Text)
+makeYoutubePlaylist token name = extractIdResponse <$> postWith (googleAuthOptions token) googlePlaylistAPI (PlaylistBody name)
 
-extractIdResponse :: (Response BL.ByteString) -> Maybe Text
+extractIdResponse :: Response BL.ByteString -> Maybe Text
 extractIdResponse x =  x ^? responseBody . key "id" . _String
 
-data PlaylistBody = PlaylistBody {name :: Text}
+data PlaylistBody = PlaylistBody { name :: Text }
 
 instance ToJSON PlaylistBody where
-  toJSON (PlaylistBody name) = object ["snippet" .= (object ["title" .= name]),
-                                       "status"  .= (object ["privacyStatus" .= ("public" :: Text)])]
+  toJSON (PlaylistBody name) = object [ "snippet" .= (object ["title" .= name])
+                                      , "status"  .= (object ["privacyStatus" .= ("public" :: Text)])]
 
 instance Postable PlaylistBody where
-  postPayload a = postPayload $ toJSON a
+  postPayload a = postPayload (toJSON a)
 
-data PlaylistItemBody = PlaylistItemBody {playlistId :: Text, videoId :: Text}
+data PlaylistItemBody = PlaylistItemBody { playlistId :: Text, videoId :: Text }
 
 instance ToJSON PlaylistItemBody where
-  toJSON (PlaylistItemBody playlistId videoId) = object ["snippet" .= (object ["playlistId" .= playlistId,
-                                                                               "resourceId" .= (object ["videoId" .= videoId,
-                                                                                                        "kind" .= ("youtube#video" :: Text)])])]
+  toJSON (PlaylistItemBody playlistId videoId) =
+    object [ "snippet"    .= (object [ "playlistId" .= playlistId
+                                     , "resourceId" .= (object [ "videoId" .= videoId
+                                                               , "kind"    .= ("youtube#video" :: Text)])])]
 instance Postable PlaylistItemBody where
-  postPayload a = postPayload $ toJSON a
-
-addVideoToPlaylist :: S.Session -> Text-> Text -> Text -> IO (Maybe Text)
-addVideoToPlaylist sess token playlist video  =  S.postWith (googleAuthOptions token) sess googleItemAPI (PlaylistItemBody playlist video) >>= return . extractIdResponse
-
-addVideoToPlaylistIgnoring404 :: S.Session -> Text-> Text -> Text -> IO (Maybe Text)
-addVideoToPlaylistIgnoring404 sess token playlist video  = do
-  result <- try  $ addVideoToPlaylist sess token playlist video :: IO (Either HttpException (Maybe Text))
-  case result of
-    (Left (StatusCodeException (Status 404 _ ) _ _)) -> return Nothing
-    (Right r) -> return r
+  postPayload a = postPayload (toJSON a)
 
 postToYoutube :: S.Session -> Text -> Text -> Consumer Post IO ()
 postToYoutube sess token playlistId = do
   post <- await
-  let vid =  pack  <$> ( videoIdFromPost post)
-  case vid of
-    Nothing -> postToYoutube sess token playlistId
+  liftIO (case videoIdFromPost post of
+    Nothing      -> return ()
     Just videoId -> do
-      _ <-  liftIO $ addVideoToPlaylistIgnoring404 sess token playlistId videoId
-      liftIO $ print post
-      postToYoutube sess token playlistId
+      _ <- addVideoToPlaylistIgnoring404 sess token playlistId (pack videoId)
+      print post)
+  postToYoutube sess token playlistId
+
+  where
+    addVideoToPlaylist :: S.Session -> Text -> Text -> Text -> IO (Maybe Text)
+    addVideoToPlaylist sess token playlist video =
+      extractIdResponse <$> S.postWith (googleAuthOptions token) sess googleItemAPI (PlaylistItemBody playlist video)
+
+    addVideoToPlaylistIgnoring404 :: S.Session -> Text-> Text -> Text -> IO (Maybe Text)
+    addVideoToPlaylistIgnoring404 sess token playlist video  = do
+      result <- try (addVideoToPlaylist sess token playlist video) :: IO (Either HttpException (Maybe Text))
+      case result of
+        Left (StatusCodeException (Status 404 _ ) _ _) -> return Nothing
+        Right r -> return r
 
 readCredentialsFromEnv :: IO AccessTokenCredentials
 readCredentialsFromEnv = do
   refreshEnv <- readEnvVariable clientRefreshTokenEnv
-  secretEnv <- readEnvVariable clientSecretEnv
-  idEnv <- readEnvVariable clientIdEnv
+  secretEnv  <- readEnvVariable clientSecretEnv
+  idEnv      <- readEnvVariable clientIdEnv
   let envCreds = AccessTokenCredentials <$> idEnv <*> secretEnv <*> refreshEnv
   case envCreds of
     Just c -> return c
     Nothing -> error "Could not read Client ID, Client Secret, and Refresh Token from ENV vars"
+
+  where
+    readEnvVariable :: String -> IO (Maybe Text)
+    readEnvVariable envVar = (pack <$>) <$> lookupEnv envVar
+
+    clientRefreshTokenEnv = "YOUTUBE_REFRESH_TOKEN" :: String
+    clientIdEnv           = "YOUTUBE_CLIENT_ID"     :: String
+    clientSecretEnv       = "YOUTUBE_CLIENT_SECRET" :: String
