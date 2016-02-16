@@ -50,11 +50,6 @@ instance FromJSON GetPostsResult where
     afterCode  <- rootData .:? "after"
     return (GetPostsResult posts afterCode)
 
-redditVideoUrl = "https://www.reddit.com/r/all/top/.json?sort=top&t=day&after="
-
-retryWithDelay :: IO a -> IO a
-retryWithDelay x = threadDelay 10000000 >> x
-
 fetchPageWithRetries :: S.Session -> Text -> Int -> IO (Maybe GetPostsResult)
 fetchPageWithRetries sess afterCode retries = do
   result <- try (fetchPage sess afterCode) :: IO (Either HttpException (Maybe GetPostsResult))
@@ -66,10 +61,17 @@ fetchPageWithRetries sess afterCode retries = do
     Left _  -> return Nothing
     Right r -> return r
 
+  where
+    retryWithDelay :: IO a -> IO a
+    retryWithDelay x = threadDelay 10000000 >> x
+
 fetchPage :: S.Session -> Text -> IO (Maybe GetPostsResult)
 fetchPage sess afterCode = do
   response <- S.get sess (redditVideoUrl ++ unpack afterCode)
   return $ decode (response ^. responseBody)
+
+  where
+    redditVideoUrl = "https://www.reddit.com/r/all/top/.json?sort=top&t=day&after="
 
 postStream :: S.Session -> Text -> Producer Post IO ()
 postStream sess afterCode = do
@@ -78,29 +80,19 @@ postStream sess afterCode = do
     each ps
     for_ afterParam (postStream sess)
 
-
-postIsValidDomain :: Post -> Bool
-postIsValidDomain x = isValidDomain (domain x)
-  where
-    isValidDomain :: Text -> Bool
-    isValidDomain x = x `elem` validDomains
-
-    validDomains = prependHost [youtubeLongURL, youtubeShortURL]
-
 youtubeShortURL = "youtu.be"
 youtubeLongURL = "youtube.com"
-
 
 prependHost :: [Text] -> [Text]
 prependHost hs = append <$> ["www.", "", "m."] <*> hs
 
 filterYoutube :: Pipe Post Post IO ()
 filterYoutube = P.filter postIsValidDomain
+  where
+    postIsValidDomain :: Post -> Bool
+    postIsValidDomain p = (domain p) `elem` validDomains
 
-isLongUrl :: URL -> Bool
-isLongUrl u = case url_type u of
-  Absolute h -> pack (host h) `elem` prependHost [youtubeLongURL]
-  _ -> False
+    validDomains = prependHost [youtubeLongURL, youtubeShortURL]
 
 videoIdFromPost :: Post -> Maybe String
 videoIdFromPost p = videoIdFromURL (unpack (url p))
@@ -124,3 +116,8 @@ videoIdFromPost p = videoIdFromURL (unpack (url p))
       case url_path url of
         "" -> Nothing
         s  -> Just s
+
+    isLongUrl :: URL -> Bool
+    isLongUrl u = case url_type u of
+      Absolute h -> pack (host h) `elem` prependHost [youtubeLongURL]
+      _ -> False
